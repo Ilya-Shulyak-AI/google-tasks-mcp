@@ -1,0 +1,43 @@
+Status as of 2026-09-18 ~07:15 CDT
+
+DONE:
+- Inspected PEC Tasks MCP (14 tools, Google Tasks API names)
+- Fingerprinted as akutishevsky/google-tasks-mcp remote Deno Deploy pattern
+- Forked to https://github.com/Ilya-Shulyak-AI/google-tasks-mcp
+- Cloned+built on box at /workspace/personal-google-tasks-mcp
+- ENCRYPTION_SECRET generated at .encryption_secret (gitignored)
+- PERSONAL_GROK_SETUP.md pushed to fork main
+- Deno CLI + deployctl installed on box
+
+BLOCKED (needs user):
+1. Personal GCP OAuth Web client (GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET)
+2. Deno Deploy project under personal GitHub (dash.deno.com) — NOT PEC Deno login
+3. Then AddMcpServer with remote URL https://<domain>/mcp name "Personal | Google Tasks"
+4. User OAuth card with personal Google
+
+NOT DONE: live deploy URL (no Deno auth yet)
+
+UPDATE 2026-09-27 ~08:00 CDT — REDEPLOYED (old org ilya-shulyak-ai deleted)
+- Deno org/app: precision-e-cycle / personal-google-tasks-mcp (source: local upload from /tmp/pw/stage/personal-google-tasks-mcp; entrypoint src/index.ts; install "deno install"; region us)
+- MCP URL: https://personal-google-tasks-mcp.precision-e-cycle.deno.net/mcp
+- Callback: https://personal-google-tasks-mcp.precision-e-cycle.deno.net/callback (GCP OAuth client redirect updated; old ilya-shulyak-ai URI replaced)
+- Health: {"status":"ok"}
+- KV: shared org KV "google-tasks-mcp" assigned (isolated timeline DBs)
+- Env: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, ENCRYPTION_SECRET (same .encryption_secret), ALLOWED_ORIGINS, LOG_LEVEL
+
+UPDATE 2026-10-06 ~09:50 CDT — Dead Google refresh token now surfaces as HTTP 401 (code fix approved by Ilya 2026-10-06)
+- src/server/middleware.ts: authenticateBearer proactively refreshes the Google access token (when expired / <60s left)
+  before the MCP handler. On Google invalid_grant or a missing refresh token it deletes the MCP token KV entry and returns
+  401 + WWW-Authenticate: Bearer error="invalid_token" so Cursor/Grok re-prompt sign-in. All 401s now carry WWW-Authenticate.
+  Transient Google failures (network/5xx) still pass through (token kept).
+- src/auth/oauth.ts: refreshGoogleToken throws GoogleTokenRefreshError(code); /token grant_type=refresh_token -> 400 invalid_grant
+  (server never issues MCP refresh tokens, so clients fall back to full re-auth).
+- src/google/api.ts: getValidAccessToken exported; deletes KV entry on invalid_grant; a Google API 401 marks the access token
+  expired so the next request re-checks the grant.
+- src/server/app.ts: CORS exposes WWW-Authenticate.
+- No /.well-known/oauth-protected-resource route exists, so no resource_metadata param in the challenge.
+- deno check: pass. Local mocked test (no header, bogus, fresh, expired+invalid_grant, missing refresh, Google 500, refresh ok,
+  /token refresh_token): all behaved as intended.
+- DEPLOY: NOT DONE — /workspace/.deno_deploy_token is missing and no DENO_DEPLOY_TOKEN is set. Live app still runs the old code
+  (bogus bearer -> 401 without WWW-Authenticate). To deploy: restore the token file, then from the repo dir run
+  DENO_DEPLOY_TOKEN=... ~/.deno/bin/deno deploy --json --non-interactive --org i-shulyak-ai --app personal-google-tasks-mcp --prod

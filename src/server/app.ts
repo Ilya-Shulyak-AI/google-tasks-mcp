@@ -56,7 +56,7 @@ export function createApp(config: ServerConfig) {
     },
     allowMethods: ["GET", "POST", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id", "Accept"],
-    exposeHeaders: ["Mcp-Session-Id", "Content-Type"],
+    exposeHeaders: ["Mcp-Session-Id", "Content-Type", "WWW-Authenticate"],
     credentials: false,
     maxAge: 86400,
   }));

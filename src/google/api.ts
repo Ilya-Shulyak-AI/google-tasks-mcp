@@ -1,5 +1,5 @@
 import { tokenStore } from "../auth/token-store.ts";
-import { refreshGoogleToken } from "../auth/oauth.ts";
+import { GoogleTokenRefreshError, refreshGoogleToken } from "../auth/oauth.ts";
 import { getOAuthConfig } from "../config.ts";
 import { createLogger } from "../utils/logger.ts";
 
@@ -7,7 +7,7 @@ const logger = createLogger({ component: "google-api" });
 
 const GOOGLE_TASKS_API_BASE = "https://tasks.googleapis.com/tasks/v1";
 
-async function getValidAccessToken(mcpToken: string): Promise<string> {
+export async function getValidAccessToken(mcpToken: string): Promise<string> {
   const tokenData = await tokenStore.getTokens(mcpToken);
   if (!tokenData) {
     throw new Error("Invalid or expired MCP token");
@@ -16,7 +16,18 @@ async function getValidAccessToken(mcpToken: string): Promise<string> {
   if (Date.now() >= tokenData.expiresAt - 60000) {
     logger.info("Access token expired, refreshing");
     const config = getOAuthConfig();
-    const refreshed = await refreshGoogleToken(tokenData.googleRefreshToken, config);
+    let refreshed;
+    try {
+      refreshed = await refreshGoogleToken(tokenData.googleRefreshToken, config);
+    } catch (error) {
+      if (error instanceof GoogleTokenRefreshError && error.requiresReauth) {
+        // Google refresh token is dead: drop this MCP token so the next request gets HTTP 401
+        // and the client re-runs the OAuth flow.
+        logger.warn("Google refresh token rejected; revoking MCP token", { error: error.code });
+        await tokenStore.deleteToken(mcpToken);
+      }
+      throw error;
+    }
 
     await tokenStore.updateTokens(mcpToken, {
       googleAccessToken: refreshed.accessToken,
@@ -47,6 +58,11 @@ async function makeGoogleRequest(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      // Access token rejected before its recorded expiry (e.g. revoked). Mark it expired so the
+      // next request's auth middleware refreshes it and returns HTTP 401 if the grant is dead.
+      await tokenStore.updateTokens(mcpToken, { expiresAt: 0 }).catch(() => {});
+    }
     const error = await response.text();
     logger.error("Google API request failed", { status: response.status, endpoint });
     throw new Error(`Google API error: ${response.status} - ${error}`);

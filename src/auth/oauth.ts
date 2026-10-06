@@ -226,6 +226,13 @@ export function createOAuthRouter(config: OAuthConfig) {
     const codeVerifier = body.code_verifier as string;
     const redirectUri = body.redirect_uri as string;
 
+    if (grantType === "refresh_token") {
+      // This server never issues MCP refresh tokens; answer invalid_grant so clients
+      // fall back to a full re-authorization instead of retrying.
+      logger.warn("Token exchange failed: refresh_token grant not supported");
+      return c.json({ error: "invalid_grant", error_description: "Refresh token is invalid; re-authorize" }, 400);
+    }
+
     if (grantType !== "authorization_code") {
       logger.warn("Token exchange failed: unsupported grant type");
       return c.json({ error: "unsupported_grant_type" }, 400);
@@ -308,6 +315,27 @@ export function createOAuthRouter(config: OAuthConfig) {
   return oauth;
 }
 
+/**
+ * Thrown when Google refuses to refresh an access token. `requiresReauth` is true when
+ * the stored refresh token is dead (revoked/expired -> invalid_grant, or missing) and the
+ * user must sign in again.
+ */
+export class GoogleTokenRefreshError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, status: number) {
+    super(`Failed to refresh Google token: ${code}`);
+    this.name = "GoogleTokenRefreshError";
+    this.code = code;
+    this.status = status;
+  }
+
+  get requiresReauth(): boolean {
+    return this.code === "invalid_grant" || this.code === "missing_refresh_token";
+  }
+}
+
 export async function refreshGoogleToken(
   refreshToken: string,
   config: OAuthConfig
@@ -317,6 +345,11 @@ export async function refreshGoogleToken(
   expiresIn: number;
 }> {
   logger.info("Refreshing Google access token");
+
+  if (!refreshToken) {
+    logger.error("Google token refresh failed: no refresh token stored");
+    throw new GoogleTokenRefreshError("missing_refresh_token", 0);
+  }
 
   const tokenResponse = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -331,11 +364,12 @@ export async function refreshGoogleToken(
     }),
   });
 
-  const tokenData = await tokenResponse.json();
+  const tokenData = await tokenResponse.json().catch(() => ({}));
 
   if (!tokenResponse.ok) {
-    logger.error("Google token refresh failed");
-    throw new Error(`Failed to refresh Google token: ${tokenData.error}`);
+    const code = typeof tokenData.error === "string" ? tokenData.error : `http_${tokenResponse.status}`;
+    logger.error("Google token refresh failed", { status: tokenResponse.status, error: code });
+    throw new GoogleTokenRefreshError(code, tokenResponse.status);
   }
 
   logger.info("Token refresh completed successfully");
